@@ -631,6 +631,8 @@ class RasterCropper {
 }
 
 // ----------------------------------------------------------------
+// Source
+//
 abstract class SourceBase {
   public function get($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
     // Gets cropper
@@ -657,16 +659,37 @@ abstract class SourceBase {
   abstract public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE);
 }
 
+// --------------------------------------------------------
+// MBSource - Source for MBTiles
+// --------------------------------------------------------
+// --------------------------------
+// Setting
+// --------------------------------
+class MBSourceSetting {
+  public $path;
+  public $revy; // if true, $y upside down
+  public function __construct($path, $revy) {
+    $this->path = $path;
+    $this->revy = $revy;
+  }
+}
 
+// --------------------------------
+// MBSource
+// --------------------------------
 class MBSource extends SourceBase {
-  private $dbpath;
-  private $revy;
+  private $settings;
 
   public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
-    if( $this->revy === TRUE ) {
+    if( !isset($this->settings[$itc]) ) {
+      // mbtiles not found
+      return FALSE;
+    }
+    $setting = $this->settings[$itc];
+    if( $setting->revy === TRUE ) {
       $y = (1 << $z) - 1 - $y;
     }
-    $sqlite3 = new SQLite3($this->dbpath, SQLITE3_OPEN_READONLY);
+    $sqlite3 = new SQLite3($setting->path, SQLITE3_OPEN_READONLY);
     if( $sqlite3 === FALSE ) {
       return FALSE;
     }
@@ -678,12 +701,15 @@ class MBSource extends SourceBase {
     }
     return $data;
   }
-  public function __construct($dbpath, $revy = FALSE) {
-    $this->dbpath = $dbpath;
-    $this->revy = $revy;
+  // dbpaths: hash [(ITC)=>(MBSourceSetting),...]
+  public function __construct($settings) {
+    $this->settings = $settings;
   }
 }
 
+// --------------------------------------------------------
+// WMSSource - Source for WMS (via http)
+// --------------------------------------------------------
 class WMSSource extends SourceBase {
   private $baseurl;
   private $delim;
@@ -705,8 +731,9 @@ class WMSSource extends SourceBase {
 
 }
 
-
-
+// --------------------------------------------------------
+// MSWMSSource - Source for WMS (with internal MapServer)
+// --------------------------------------------------------
 class MSWMSSource extends SourceBase {
   private $mspath;
   private $mapfilepath;
@@ -745,6 +772,8 @@ class MSWMSSource extends SourceBase {
 }
 
 // ----------------------------------------------------------------
+// Store
+//
 abstract class StoreBase{
   abstract public function get($layername, $z, $x, $y, $itc);
   abstract public function put($layername, $z, $x, $y, $itc, $data);
@@ -1563,7 +1592,7 @@ EOL_LAYER_LIMITS;
       }
     }
     if( $this->source ) {
-      $data = $this->source->get($z,$x,$y,ITCode::IT_PNG, $pmx, $pmy, $this->prof, $this->opts);
+      $data = $this->source->get($z,$x,$y,$itc, $pmx, $pmy, $this->prof, $this->opts);
       if( $data !== FALSE ) {
         if( $this->store ) {
           $this->store->put($this->name, $z, $x, $y, $itc, $data);
