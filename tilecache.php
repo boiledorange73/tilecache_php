@@ -659,6 +659,59 @@ abstract class SourceBase {
   abstract public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE);
 }
 
+
+// --------------------------------------------------------
+// FileSource - Source for filesystem
+// --------------------------------------------------------
+// --------------------------------
+// FileSourceBase
+// --------------------------------
+abstract class FileSourceBase extends SourceBase {
+  private $basedir;
+  private $layername;
+  private $revy;
+  abstract public function dirpath($layername,$z,$x,$y,$itc);
+  abstract public function filename($layername,$z,$x,$y,$itc);
+
+  public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
+    if( $this->revy ) {
+      $y = (1 << $z) - $y - 1;
+    }
+    $filepath =
+      $this->basedir.DIRECTORY_SEPARATOR.
+      $this->dirpath($this->layername,$z,$x,$y,$itc).DIRECTORY_SEPARATOR.
+      $this->filename($this->layername,$z,$x,$y,$itc);
+    if( file_exists($filepath) ) {
+      return file_get_contents($filepath);
+    }
+    return FALSE;
+  }
+
+  public function __construct($basedir, $layername, $revy) {
+    $this->basedir = $basedir;
+    $this->layername = $layername;
+    $this->revy = $revy;
+  }
+
+}
+
+// --------------------------------
+// TMSSource
+// --------------------------------
+class TMSSource extends FileSourceBase {
+  public function dirpath($layername,$z,$x,$y,$itc) {
+    return
+      $layername.DIRECTORY_SEPARATOR.
+      $z.DIRECTORY_SEPARATOR.
+      $x;
+  }
+
+  public function filename($layername,$z,$x,$y,$itc) {
+    return $y.'.'.ITCode::EXTENSIONS[$itc];
+  }
+}
+
+
 // --------------------------------------------------------
 // MBSource - Source for MBTiles
 // --------------------------------------------------------
@@ -1068,8 +1121,8 @@ class TileParams {
   const T_TMSRES   = 0x0203; // 515 /{L}/tilemapresource.xml
   const T_Z        = 0x0211; // /{L}/{Z}/
   const T_X        = 0x0311; // /{L}/{Z}/{X}
-  const T_IMAGE    = 0x0401; // /{L}/{Z}/{X}/{Y}.{E}
-  const T_KML      = 0x0402; // /{L}/{Z}/{X}/{Y}.{E}.kml
+  const T_IMAGE    = 0x0401; // 1025 /{L}/{Z}/{X}/{Y}.{E}
+  const T_KML      = 0x0402; // 1026 /{L}/{Z}/{X}/{Y}.{E}.kml
   const T_ERROR    = 0x1FFF; // Error
   const T_NOTFOUND = 0x1001; // 4097 Error: notfound
   const T_FORBIDDEN= 0x1002; // Error: forbidden
@@ -1159,6 +1212,20 @@ class TileParams {
       $ret = $ret.'/';
     }
     return $ret;
+  }
+
+  public function buildWmtsUrl() {
+    return $this->buildRootUrl(TRUE).'WMTSCapabilities.xml';
+  }
+
+  public function buildKmlRootUrl($itc, $layername = FALSE) {
+    $layerurl = $this->buildLayerUrl(TRUE, $layername);
+    return $layerurl . 'doc.'.ITCode::EXTENSIONS[$itc].'.kml';
+  }
+
+  public function buildTileJsonUrl($itc, $layername = FALSE) {
+    $layerurl = $this->buildLayerUrl(TRUE, $layername);
+    return $layerurl . 'tilejson.'.ITCode::EXTENSIONS[$itc].'.json';
   }
 
   public function buildTileUrl($z, $x, $y, $type, $itc, $layername=FALSE) {
@@ -1651,13 +1718,38 @@ EOL_LINK;
       $c = $this->llext->centroid();
       $clon = $c->x;
       $clat = $c->y;
-      $range = 10000; // TODO: fit
+      $alti = 0.0;
+      // range
+      $R = 6378137.0;
+      $lonmin = $this->llext->xmin;
+      $lonmax = $this->llext->xmax;
+      $latmin = $this->llext->ymin;
+      $latmax = $this->llext->ymax;
+      $dlon = $lonmax - $lonmin;
+      $dlat = $latmax - $latmin;
+      $dlam = $dlon*M_PI/180.0;
+      $dphi = $dlat*M_PI/180.0;
+      // $alat = abs(lat)
+      $alatmax = abs($latmax);
+      $alatmin = abs($latmin);
+      $alat = $alatmax > $alatmin ? $alatmin : $alatmax;
+      // Focal Length (mm)
+      $F = 30.0;
+      // range for y
+      $tan_ty = 18.0 / $F;
+      $range_lat = $R * (1-cos(0.5*$dlam)+sin(0.5*$dlam)/$tan_ty);
+      // range for x
+      $tan_tx = 12.0 / $F;
+      $range_lon = $R * cos($alat*M_PI/180.0) * (1-cos(0.5*$dlam)+sin(0.5*$dlam)/$tan_tx);
+      // range
+      $range = $range_lat > $range_lon ? $range_lat : $range_lon;
+      // LookAt element
       $lookat = <<< EOL_LOOKAT
 <LookAt>
   <latitude>$clat</latitude>
   <longitude>$clon</longitude>
   <altitude>0</altitude>
-  <range></range>
+  <range>$range</range>
 </LookAt>
 
 EOL_LOOKAT;
@@ -1812,6 +1904,25 @@ class TileCache {
     Header('Location: '.($params->buildThisUrl(TRUE)));
   }
 
+  public static function showHtml($title, $head, $body) {
+    Header('Content-Type: '.ITCode::CONTENT_TYPES[ITCode::IT_HTML]);
+    echo <<< EOL_HTML
+<!DOCTYPE html>
+<html>
+<head>
+  <meta cahrset="UTF-8">
+  <title>$title</title>
+  $head
+</head>
+<body>
+<h1>$title</h1>
+$body
+</body>
+</html>
+EOL_HTML;
+
+  }
+
   public static function showNotFound($params) {
     TileCache::showError(
       404,
@@ -1886,15 +1997,38 @@ EOL_ERROR_HEAD;
   //
   // process
   //
-  function processRoot($params) {
-    // shows layers
-    $content = <<< EOL_HTML
-<h1>TC</h1>
-<table>
-</table>
 
-EOL_HTML;
-    TileCache::showContent($params, $content);
+  //
+  // Process at root URL. Simply shows a table.
+  //
+  function processRoot($params) {
+    $body = "<table><tbody>\n<tr><th>Name</th><th>Ext</th><th>KML</th><th>TileJSON</th></tr>\n";
+    foreach( $this->layers as $layername => $layer ) {
+      $itcs =  $layer->getImageTypeCodes();
+      $itcslen = count($itcs);
+      if( count($itcs) > 0 ) {
+        $body = $body . "<tr><th rowspan=\"$itcslen\">$layername</th>";
+        for( $n = 0; $n < $itcslen; $n++ ) {
+          $itc = $itcs[$n];
+          if( $n > 0 ) {
+            $body = $body . '<tr>';
+          }
+          $ext = ITCode::EXTENSIONS[$itc];
+          $pattern = $params->buildTileUrl('{z}','{x}','{y}', TileParams::T_IMAGE, $itc, $layername);
+          $kmlroot = $params->buildKmlRootUrl($itc, $layername);
+          $tilejson = $params->buildTileJsonUrl($itc, $layername);
+          $body = $body
+            . "<th>$ext</th><td><a href=\"$kmlroot\">KML</a></td><td><a href=\"$tilejson\">TileJSON</a></td><td>$pattern</td></tr>\n";
+        }
+      }
+      else {
+        $body = $body . "<tr><th>$layername</th><td></td><td></td></tr>\n";
+      }
+    }
+    $body = $body . "</tbody></table>\n";
+    // WMTSCapabilities.xml
+    $body = $body . '<p><a href="'.($params->buildWmtsUrl()).'">WMTSCapabilities.xml</p>';
+    TileCache::showHtml($this->name, '', $body);
   }
 
 
