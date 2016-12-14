@@ -2053,7 +2053,7 @@ EOL_ERROR_HEAD;
   // Process at root URL. Simply shows a table.
   //
   function processRoot($params) {
-    $body = "<table><tbody>\n<tr><th>Name</th><th>Ext</th><th>KML</th><th>TileJSON</th></tr>\n";
+    $body = "<table><tbody>\n<tr><th>Name</th><th>Extension</th><th>z</th><th>KML</th><th>TileJSON</th><th>Pattern</th></tr>\n";
     foreach( $this->layers as $layername => $layer ) {
       $itcs =  $layer->getImageTypeCodes();
       $itcslen = count($itcs);
@@ -2068,8 +2068,9 @@ EOL_ERROR_HEAD;
           $pattern = $params->buildTileUrl('{z}','{x}','{y}', TileParams::T_IMAGE, $itc, $layername);
           $kmlroot = $params->buildKmlRootUrl($itc, $layername);
           $tilejson = $params->buildTileJsonUrl($itc, $layername);
+          $z = ($layer->getZMin().'-'.$layer->getZMax());
           $body = $body
-            . "<th>$ext</th><td><a href=\"$kmlroot\">KML</a></td><td><a href=\"$tilejson\">TileJSON</a></td><td>$pattern</td></tr>\n";
+            . "<th>$ext</th><td>$z</td><td><a href=\"$kmlroot\">KML</a></td><td><a href=\"$tilejson\">TileJSON</a></td><td>$pattern</td></tr>\n";
         }
       }
       else {
