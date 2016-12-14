@@ -63,6 +63,17 @@ class ITCode {
     }
     return FALSE;
   }
+
+  // Converts Content-Type text (i.e. "image/png") to ITC (Image Type Code)
+  static public function ct2itc($ct) {
+    foreach( self::CONTENT_TYPES as $itc => $ctcand ) {
+      if( $ct == $ctcand ) {
+        return $itc;
+      }
+    }
+    return FALSE;
+  }
+
 }
 
 //
@@ -173,6 +184,9 @@ class WMSQueryString {
       '&FORMAT='.$fmt.
       $bgcolor.
       $transparent.
+      '&DPI=96'.
+      '&MAP_RESOLUTION=96'.
+      '&FORMAT_OPTIONS=dpi:96'.
       '&EXCEPTIONS=XML';
     return $querystring;
   }
@@ -490,6 +504,11 @@ abstract class ProfileBase {
     return $this->crs;
   }
 
+  // Gets ub forced within the world
+  public function intersection($ub) {
+    return Box::intersection($ub, $this->uext);
+  }
+
   // Converts LonLat Box to Unit Box.
   public function prjbox($box) {
     $ap1 = $box->toXYArray();
@@ -711,7 +730,6 @@ class TMSSource extends FileSourceBase {
   }
 }
 
-
 // --------------------------------------------------------
 // MBSource - Source for MBTiles
 // --------------------------------------------------------
@@ -779,6 +797,38 @@ class WMSSource extends SourceBase {
     $qs = WMSQueryString::generate($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts['layers'], $bg);
     $url = $this->baseurl.$this->delim.$qs;
     $data = @file_get_contents($url);
+    if( $data === FALSE ) {
+      // log error
+      $err = error_get_last();
+      error_log($err['message']);
+    }
+    else {
+      // if http/https, $http_response_header is set.
+      if( isset($http_response_header) ) {
+        if( is_array($http_response_header) ) {
+          foreach( $http_response_header as $line ) {
+            if( preg_match('/^HTTP\\/[0-9\\.]+\\s+[0-9]+\\s+.*$/', $line) ) {
+              $status = (int)preg_replace('/^HTTP\\/[0-9\\.]+\\s+([0-9]+)\\s+.*$/', '${1}', $line);
+              if( $status != 200 ) {
+                // error occurred
+                error_log($url.' gets '.$status);
+                $data = FALSE;
+                break;
+              }
+            }
+            if( preg_match('/^Content-Type\\s*:/', $line) ) {
+              $ct = preg_replace('/^Content-Type\\s*:\\s*([^\\s].*)$/', '${1}', $line);
+              $itc1 = ITCode::ct2itc($ct);
+              if( $itc1 != $itc ) {
+                error_log('Expects "'.ITCode::CONTENT_TYPES[$itc].'", but got contet type is "'.$ct.'".');
+                $data = FALSE;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
     return $data;
   }
 
@@ -1435,7 +1485,8 @@ class PGChecker {
     $with = 'WITH argraw AS (SELECT $1::GEOMETRY AS g), '.
       'arg AS (SELECT '.implode(',',$args).' FROM argraw)';
     $query = $with.' SELECT '.implode(' OR ', $arr);
-    $ub = $prf->t2ub($z, $x, $y, $pmx, $pmy);
+    $ub = $prf->t2ub($z, $x, $y, $pmx, $pmy); // box with margin (UNIT)
+    $ub = $prf->intersection($ub); // 2016/12/04 force the box within the world.
     $ewkb = $ub->ewkb($prf->getCrs());
     // run
     $ret = TRUE;
