@@ -386,9 +386,9 @@ class ZExtent {
     $this->zmax = (int)$zmax;
   }
   //
-  // Returns wheter $z within the extent.
+  // Returns wheter this covers $z the extent.
   //
-  public function within($z) {
+  public function covers($z) {
     return ($z >= $this->zmin && $z <= $this->zmax);
   }
 }
@@ -1540,7 +1540,7 @@ class Layer {
   }
 
   // minimum of available z (including z where 'ob' image must be returned)
-  public function getAZMin() {
+  public function getVrtZMin() {
     if( $this->opts ) {
       if( isset($this->opts['ob']) ) {
         return 0;
@@ -1551,6 +1551,10 @@ class Layer {
 
   public function getZMax() {
     return $this->zext->zmax;
+  }
+
+  public function coversVrtZ($z) {
+    return $z >= $this->getVrtZMin() && $z <= $this->getZMax();
   }
 
   public function getLonLatExtent() {
@@ -1589,7 +1593,7 @@ class Layer {
     $ymin = $llext->ymin;
     $xmax = $llext->xmax;
     $ymax = $llext->ymax;
-    $zmin = $this->getAZMin();
+    $zmin = $this->getVrtZMin();
     $zmax = $this->getZMax();
     $profname = $this->prof->getName();
     $ret = <<< EOL_LAYER_HEAD
@@ -1665,33 +1669,44 @@ EOL_LAYER_LIMITS;
       $pmx = $this->pm->x;
       $pmy = $this->pm->y;
     }
-    if(
-      (
-        $this->llext
-        && !Box::intersects(
-          $this->prof->prjbox($this->llext),
-          $this->prof->t2ub($z, $x, $y, 0, 0)
-        )
-      )
-      || (
-        $this->zext
-        && (
-          $z < $this->zext->zmin
-          || $z > $this->zext->zmax
-        )
+    // Checks OB (out of bounds)
+    // 0: Within extent ZXY
+    // 1: OB, returns specified image.
+    // 2: Not Found, must not return any image.
+    $ob = 0;
+    if($this->llext
+      && !Box::intersects(
+        $this->prof->prjbox($this->llext),
+        $this->prof->t2ub($z, $x, $y, 0, 0)
       )
     ) {
-      // out of bounds
+      $ob = 1;
+    }
+    else if($this->zext && !$this->zext->covers($z) ) {
+      // without zext
+      if( $this->coversVrtZ($z) ) {
+        $ob = 1;
+      }
+      else {
+        $ob = 2; // Not Found
+      }
+    }
+    // Returns if OB.
+    if( $ob != 0 ) {
       $data = FALSE;
-      if( $this->opts ) {
-        if( isset($this->opts['ob']) ) {
-          if( isset($this->opts['ob'][$itc]) ) {
-            $data = $this->getfile($this->opts['ob'][$itc]);
+      if( $ob == 1 ) {
+        // Tries to fetch the image from opts.
+        if( $this->opts ) {
+          if( isset($this->opts['ob']) ) {
+            if( isset($this->opts['ob'][$itc]) ) {
+              $data = $this->getfile($this->opts['ob'][$itc]);
+            }
           }
         }
       }
       return [self::ST_OB, $data];
     }
+    // Checks with checker.
     if( $this->checker && !$this->checker->check($this->prof, $z, $x, $y, $pmx, $pmy) ) {
       // checker error
       if( $this->opts ) {
@@ -1703,12 +1718,14 @@ EOL_LAYER_LIMITS;
       }
       return [self::ST_OB, $data];
     }
+    // Tries to fetch from store
     if( $this->store ) {
       $data = $this->store->get($this->name, $z, $x, $y, $itc);
       if( $data !== FALSE ) {
         return [self::ST_CACHE, $data];
       }
     }
+    // Tries to fetche from source
     if( $this->source ) {
       $data = $this->source->get($z,$x,$y,$itc, $pmx, $pmy, $this->prof, $this->opts);
       if( $data !== FALSE ) {
@@ -1718,6 +1735,8 @@ EOL_LAYER_LIMITS;
         return [self::ST_OK, $data];
       }
     }
+    // Could not fetches either from store or source.
+    // Unknown error occrred.
     return  [self::ST_ERROR, FALSE];
   }
 
@@ -1851,7 +1870,7 @@ EOL_KML;
       if( !$this->opts ) {
         if( isset($this->opts['ob']) ) {
           if( isset($this->opts['ob'][$itc]) ) {
-            // has alternative
+            // has substitute
             $st = self::ST_OK;
           }
         }
@@ -2186,7 +2205,7 @@ EOL_XML_HEAD;
     foreach( $this->layers as $name => $layer ) {
       $prof = $layer->getProfile();
       $profname = $prof->getName();
-      $zmin = $layer->getAZMin();
+      $zmin = $layer->getVrtZMin(); // Uses getVrtZMin, not getZMin
       $zmax = $layer->getZMax();
       if( !isset($mss[$profname]) ) {
         $mss[$profname] = array($prof, $zmin, $zmax);
