@@ -1963,6 +1963,7 @@ class TileCache {
   //
   public static function showContent($params, $content) {
     Header('Content-Type: '.($params->getContentType()));
+    Header('Access-Control-Allow-Origin: *');
     echo $content;
   }
 
