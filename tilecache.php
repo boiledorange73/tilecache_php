@@ -1,5 +1,12 @@
 <?php
 
+// ================================================================
+// tilecache.php
+// BSD 2-Clause License
+// Copyright (c) 2016, boiledorang73
+// All rights reserved.
+// ================================================================
+
 //
 // Image Type code.
 //
@@ -855,6 +862,10 @@ class MSWMSSource extends SourceBase {
   public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
     $qs = WMSQueryString::generate($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts['layers'], $bg);
     $querystring = 'map='.$this->mapfilepath.'&'.$qs;
+    //
+    // echo "'".$this->mspath."' 'QUERY_STRING=${querystring}'";
+    // exit;
+    //
     $fr = popen("'".$this->mspath."' 'QUERY_STRING=${querystring}'", 'r');
     $data = FALSE;
     $fmt = ITCode::WMS_FORMATS[$itc];
@@ -958,12 +969,124 @@ class DigitStore extends FileStoreBase {
   }
 }
 
+/*
+
+CREATE TABLE tile (
+  layer TEXT,
+  z INT,
+  x INT,
+  y INT,
+  itc INT,
+  data bytea,
+  UNIQUE(layer, z, x, y, itc)
+);
+
+-- Execute following
+-- if you need to grant "tile" table to web server user.
+GRANT ALL ON tile TO (pguser);
+*/
+
+// 2018-07-05 Added
+class PDOStore extends StoreBase {
+  private $dsn;
+  private $user;
+  private $password;
+  private $table;
+
+  private $pdo = NULL; // PDO instance
+
+  private function getPdo() {
+    if( $this->pdo == NULL ) {
+      $this->pdo = new PDO($this->dsn, $this->user, $this->password);
+    }
+    return $this->pdo;
+  }
+
+  private function clearPdo() {
+    if( $this->pdo != NULL ) {
+      $this->pdo = NULL;
+    }
+  }
+
+  public function get($layername, $z, $x, $y, $itc) {
+    $pdo = $this->getPdo();
+    $ret = FALSE;
+    $sth = $pdo->prepare(
+      'SELECT data FROM '.$this->table.' '.
+        'WHERE layer=:layer AND z=:z AND x=:x AND y=:y AND itc=:itc'
+    );
+    $params = array(
+      ':layer' => $layername,
+      ':z' => $z,
+      ':x' => $x,
+      ':y' => $y,
+      ':itc' => $itc
+    );
+    if( $sth->execute($params) === FALSE ) {
+      return FALSE;
+    }
+    $sth->bindColumn('data', $stream, PDO::PARAM_LOB);
+    if( $sth->fetch() === FALSE ) {
+      return FALSE;
+    }
+    $ret = stream_get_contents($stream);
+    return $ret;
+  }
+
+  public function put($layername, $z, $x, $y, $itc, $data) {
+    $pdo = $this->getPdo();
+    $ret = FALSE;
+    $sth = $pdo->prepare(
+      'INSERT INTO '.$this->table.' (layer,z,x,y,itc,data) '.
+        'SELECT :layer,:z,:x,:y,:itc,:data'
+    );
+    $sth->bindParam(':data', $data, PDO::PARAM_LOB);
+    $sth->bindParam(':layer', $layername);
+    $sth->bindParam(':z', $z);
+    $sth->bindParam(':x', $x);
+    $sth->bindParam(':y', $y);
+    $sth->bindParam(':itc', $itc);
+    if( $sth->execute() === FALSE ) {
+      return FALSE;
+    }
+    return TRUE;
+  }
+
+  public function __construct($dsn, $user, $password, $table) {
+    $this->dsn = $dsn;
+    $this->user = $user;
+    $this->password = $password;
+    $this->table = $table;
+  }
+
+  public function __destruct() {
+    $this->clearPdo();
+  }
+
+}
+
 class PGStore extends StoreBase {
   private $connstr;
   private $table;
 
+  private $conn = NULL;
+
+  private function getConn() {
+    if( $this->conn == NULL ) {
+      $conn = pg_connect($this->connstr);
+    }
+    return $conn;
+  }
+
+  private function clearConn() {
+    if( $this->conn != NULL ) {
+      $conn = pg_close($this->conn);
+      $this->conn = NULL;
+    }
+  }
+
   public function get($layername, $z, $x, $y, $itc) {
-    $conn = pg_connect($this->connstr);
+    $conn = $this->getConn();
     pg_query($conn, 'begin');
     $ret = FALSE;
     $res = pg_query_params(
@@ -981,12 +1104,11 @@ class PGStore extends StoreBase {
       }
     }
     pg_query($conn, 'end');
-    pg_close($conn);
     return $ret;
   }
 
   public function put($layername, $z, $x, $y, $itc, $data) {
-    $conn = pg_connect($this->connstr);
+    $conn = $this->getConn();
     $tmppath = tempnam( sys_get_temp_dir(), '_TILE_PG_WRITE_');
     file_put_contents($tmppath, $data);
     pg_query($conn, 'begin');
@@ -1010,6 +1132,10 @@ class PGStore extends StoreBase {
   public function __construct($connstr, $table) {
     $this->connstr = $connstr;
     $this->table = $table;
+  }
+
+  public function __destruct() {
+    $this->clearConn();
   }
 }
 
@@ -1158,6 +1284,8 @@ class Url {
 //
 // TileParams
 //
+// 2018-07-05 Added: setType, setImageTypeCode, setZ, setX, setY, setLayerName
+//
 class TileParams {
 
   const T_NONE    = 0;       //  0
@@ -1205,20 +1333,55 @@ class TileParams {
     return $this->type;
   }
 
+  public function setType($v) {
+    $this->type = $v;
+    return $this;
+  }
+
   public function getImageTypeCode() {
     return $this->itc;
+  }
+
+  public function setImageTypeCode($v) {
+    $this->itc = $v;
+    return $this;
   }
 
   public function getZ() {
     return $this->z;
   }
 
+  public function setZ($v) {
+    $this->z = $v;
+    return $this;
+  }
+
   public function getX() {
     return $this->x;
   }
 
+  public function setX($v) {
+    $this->x = $v;
+    return $this;
+  }
+
   public function getY() {
     return $this->y;
+  }
+
+  public function setY($v) {
+    $this->y = $v;
+    return $this;
+  }
+
+
+  public function getLayerName() {
+    return $this->layername;
+  }
+
+  public function setLayerName($v) {
+    $this->layername = $v;
+    return $this;
   }
 
   public function getContentType() {
@@ -1239,10 +1402,6 @@ class TileParams {
       return ITCode::CONTENT_TYPES[ITCode::IT_KML];
     }
     return ITCode::CONTENT_TYPES[ITCode::IT_HTML];
-  }
-
-  public function getLayerName() {
-    return $this->layername;
   }
 
   public function buildThisUrl($forcedir) {
@@ -1510,6 +1669,7 @@ class PGChecker {
 //
 // Layer
 //
+// 2018-07-05 Added: getPm
 class Layer {
 
   const ST_ERROR = 0;
@@ -1562,7 +1722,8 @@ class Layer {
   }
 
   public function getTileExtent($z, $pmx, $pmy) {
-    return $this->prof->t2llb($z, $this->llext, $pmx, $pmy);
+    // 2018-07-05 modified: Changes wrong t2llb to correct llb2tb.
+    return $this->prof->llb2tb($z, $this->llext, $pmx, $pmy);
   }
 
   public function getProfile() {
@@ -1572,6 +1733,17 @@ class Layer {
   public function getImageTypeCodes() {
     return $this->itcs;
   }
+
+  /**
+   * Gets array containng margin_x and margin_y [pixel].
+   */
+  public function getPm() {
+    if( $this->pm == NULL) {
+      return new XY(0, 0);
+    }
+    return new XY($this->pm->x, $this->pm->y);
+  }
+
 
   public function __construct($name, $prof, $itcs, $llext, $zext, $pm, $source, $store, $checker, $opts) {
     $this->name = $name;
@@ -2339,6 +2511,58 @@ EOL_TILEMATRIX;
     default:
       TileCache::showNotFound($params);
       return;
+    }
+  }
+
+  //
+  // batch
+  //
+  function batch($layernames = NULL, $zext = NULL) {
+    if( $layernames == NULL ) {
+      $layers = $this->layers;
+    }
+    else {
+      $layers = array();
+      foreach( $layernames as $layername ) {
+        if( isset($this->layers[$layername]) ) {
+          array_push($layers, $this->layers[$layername]);
+        }
+      }
+    }
+    //
+    foreach( $layers as $layer ) {
+      $pm = $layer->getPm();
+      $pmx = $pm->x;
+      $pmy = $pm->y;
+      $zmin = $layer->getZMin();
+      $zmax = $layer->getZMax();
+      if( $zext != NULL ) {
+        $zmin = $zext->zmin;
+        $zmax = $zext->zmax;
+      }
+      //
+      $itcs = $layer->getImageTypeCodes();
+      //
+      $params = new TileParams();
+      for( $z = $zmin; $z <= $zmax; $z++ ) {
+        $params->setZ($z);
+        $text = $layer->getTileExtent($z, $pmx, $pmy);
+        $txmin = $text->xmin;
+        $tymin = $text->ymin;
+        $txmax = $text->xmax;
+        $tymax = $text->ymax;
+        for( $ty = $tymin; $ty <= $tymax; $ty++ ) {
+          $params->setY($ty);
+          for( $tx = $txmin; $tx <= $txmax; $tx++ ) {
+            $params->setX($tx);
+            foreach( $itcs as $itc ) {
+              $params->setImageTypeCode($itc);
+              echo "z=$z x=$tx y=$ty itc=$itc\n";
+              $data = $layer->getImage($params->getZ(), $params->getX(), $params->getY(), $params->getImageTypeCode());
+            }
+          }
+        }
+      }
     }
   }
 }
