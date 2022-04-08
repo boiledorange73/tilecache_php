@@ -1,5 +1,7 @@
 <?php
 
+define('E500_MESSAGE_SHORT', true);
+
 // ================================================================
 // tilecache.php
 // BSD 2-Clause License
@@ -767,12 +769,21 @@ class MBSource extends SourceBase {
     if( $setting->revy === TRUE ) {
       $y = (1 << $z) - 1 - $y;
     }
-    $sqlite3 = new SQLite3($setting->path, SQLITE3_OPEN_READONLY);
-    if( $sqlite3 === FALSE ) {
-      return FALSE;
-    }
-    $data = $sqlite3->querySingle("SELECT tile_data FROM tiles WHERE zoom_level=$z AND tile_column=$x AND tile_row=$y");
-    $sqlite3->close();
+    $dbh = new PDO(
+        'sqlite:'.$setting->path,
+        null,
+        null,
+        [
+            PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY
+        ]
+    );
+    $sth = $dbh->prepare('SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?');
+    $sth->execute([$z, $x, $y]);
+    $data = $sth->fetchColumn(0);
+    $sth->closeCursor();
+    // purges db resources
+    $sth = NULL;
+    $dbh = NULL;
     // If error, returns FALSE (to send 403 status to the client).
     if( $data == NULL ) {
       return FALSE;
