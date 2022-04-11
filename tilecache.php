@@ -594,6 +594,41 @@ class MercProfile extends ProfileBase {
 }
 
 
+class MercRevProfile extends ProfileBase {
+  const R = 6378137.0;
+
+  public function __construct($pts = FALSE ) {
+    parent::__construct(
+      'merc',
+      'EPSG:3857',
+      false,
+      new XY(-20037508.0, -20037508.0),
+      new XY(20037508.0, 20037508.0),
+      $pts ? $pts : new XY(256,256),
+      new XY(1, 1),
+      1.0,
+      'urn:ogc:def:crs:EPSG:6.18:3:3857',
+      'urn:ogc:def:wkss:OGC:1.0:GoogleMapsCompatible'
+    );
+  }
+
+  public function prj($p) {
+    return new XY(
+      self::R * (double)$p->x*M_PI/180.0,
+      self::R * log(tan(0.25*M_PI + 0.5*(double)$p->y*M_PI/180.0))
+    );
+  }
+
+  public function inv($p) {
+    return new XY (
+      (double)$p->x / self::R / M_PI * 180.0,
+      asin(tanh($p->y/self::R)) / M_PI * 180.0
+    );
+  }
+}
+
+
+
 //
 // Geodetic Profile
 //
@@ -605,6 +640,31 @@ class GeodProfile extends ProfileBase {
       true,
       new XY(-180.0, 90.0),
       new XY(180.0, -90.0),
+      $pts ? $pts : new XY(256,256),
+      new XY(2, 1),
+      2.0*pi()*6378137.0/360.0,
+      'urn:ogc:def:crs:OGC:1.3:CRS84',
+      'urn:ogc:def:wkss:OGC:1.0:GoogleCRS84Quad'
+    );
+  }
+
+  public function prj($p) {
+    return new XY($p->x, $p->y);
+  }
+
+  public function inv($p) {
+    return new XY($p->x, $p->y);
+  }
+}
+
+class GeodRevProfile extends ProfileBase {
+  public function __construct($pts = FALSE) {
+    parent::__construct(
+      'geod',
+      'EPSG:4326',
+      true,
+      new XY(-180.0, -90.0),
+      new XY(180.0, 90.0),
       $pts ? $pts : new XY(256,256),
       new XY(2, 1),
       2.0*pi()*6378137.0/360.0,
