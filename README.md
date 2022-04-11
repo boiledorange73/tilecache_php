@@ -23,6 +23,56 @@ Each name of layer instance (specified by an argument of constructor) must be un
 Layer contains name, profile, acceptable image types, extent, z-extent, margin, source, store, checker and options.
 
 ```php
+$prof_mercrev = new MercRevProfile();
+
+$layer_kanto_rapid_900913 =  new Layer(
+    'Kanto_Rapid-900913', // NAME
+    $prof_mercrev, // Profile instance
+    array(ITCode::IT_JPEG), // Acceptable image types
+    new Box(138.94691760763, 34.859506442838, 140.88036115392, 36.465420081904), // Extent (lonlat)
+    new ZExtent(0,17), // Extent of zoom (z)
+    NULL, // Margin (pixel)
+    new MBSource(array(
+        ITCode::IT_JPEG => new MBSourceSetting(
+          '/.../kanto_rapid.mbtiles',
+          FALSE, // TRUE if Y-direction of param != Y-direction of source.
+        )
+    )), // Source
+    FALSE,  // Store ... NO STORE
+    FALSE, // Cheker ... NO CHECKER
+    array(
+      'blank' => array(ITCode::IT_PNG=>'eee.png',ITCode::IT_JPEG=>'eee.jpg'), // substitute when not found.
+      'ob'    => array(ITCode::IT_PNG=>'eee.png',ITCode::IT_JPEG=>'eee.jpg'), // substitute when out of bounds.
+    )
+);
+```
+
+```php
+$prof_merc = new MercProfile();
+
+$layer_kanto_rapid_900913_l =  new Layer(
+    'Kanto_Rapid-900913-L', // NAME
+    $prof_merc, // Profile instance
+    array(ITCode::IT_JPEG), // Acceptable image types
+    new Box(138.94691760763, 34.859506442838, 140.88036115392, 36.465420081904), // Extent (lonlat)
+    new ZExtent(0,17), // Extent of zoom (z)
+    NULL, // Margin (pixel)
+    new MBSource(array(
+        ITCode::IT_JPEG => new MBSourceSetting(
+          '/.../kanto_rapid.mbtiles',
+          TRUE, // TRUE if Y-direction of param != Y-direction of source.
+        )
+    )), // Source
+    FALSE,  // Store ... NO STORE
+    FALSE, // Cheker ... NO CHECKER
+    array(
+      'blank' => array(ITCode::IT_PNG=>'eee.png',ITCode::IT_JPEG=>'eee.jpg'), // substitute when not found.
+      'ob'    => array(ITCode::IT_PNG=>'eee.png',ITCode::IT_JPEG=>'eee.jpg'), // substitute when out of bounds.
+    )
+);
+```
+
+```php
   new Layer(
     'pntms-merc', // NAME
     $prof_merc, // Profile instance
