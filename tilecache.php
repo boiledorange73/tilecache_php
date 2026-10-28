@@ -1,7 +1,5 @@
 <?php
 
-define('E500_MESSAGE_SHORT', true);
-
 // ================================================================
 // tilecache.php
 // BSD 2-Clause License
@@ -76,11 +74,17 @@ class ITCode {
   // Converts Content-Type text (i.e. "image/png") to ITC (Image Type Code)
   static public function ct2itc($ct) {
     foreach( self::CONTENT_TYPES as $itc => $ctcand ) {
-      if( $ct == $ctcand ) {
+      if( strcasecmp($ct, $ctcand) == 0 ) {
         return $itc;
       }
     }
     return FALSE;
+  }
+
+  // See Content-Type = ITC (Image Type Code)
+  static public function ctIsItc($ct, $itc) {
+    return isset(self::CONTENT_TYPES[$itc])
+      && strcasecmp($ct, self::CONTENT_TYPES[$itc]) == 0;
   }
 
 }
@@ -120,15 +124,15 @@ class Bin {
   }
 
   public static function packDouble($v, $e = FALSE) {
-    $ret = pack('d', (double)$v);
-    return !self::needsReverse($e) ? $ret : strrev($e);
+    $ret = pack('d', (float)$v);
+    return !self::needsReverse($e) ? $ret : strrev($ret);
   }
 
   public static function packDoubleArray($a, $e = FALSE) {
     $rev = self::needsReverse($e);
     $ret = '';
     foreach( $a as $v ) {
-      $r1 = pack('d', (double)$v);
+      $r1 = pack('d', (float)$v);
       if( $rev ) {
         $r1 = strrev($r1);
       }
@@ -139,14 +143,14 @@ class Bin {
 
   public static function packInt32($v, $e = FALSE) {
     $ret = pack('l', (int)$v);
-    return !self::needsReverse($e) ? $ret : strrev($e);
+    return !self::needsReverse($e) ? $ret : strrev($ret);
   }
 
 }
 
 class WMSQueryString {
   static public function generate($z, $x, $y, $itc, $pmx, $pmy, $prf, $wmslayers, $bg = FALSE) {
-    $uext = $prf->t2ub($z, $x, $y, $pmx, $pmy, true);
+    $uext = $prf->t2ub($z, $x, $y, $pmx, $pmy, TRUE);
     $pw = $prf->pts->x + $pmx + $pmx;
     $ph = $prf->pts->y + $pmy + $pmy;
     $fmt = ITCode::WMS_FORMATS[$itc];
@@ -169,7 +173,7 @@ class WMSQueryString {
     }
     // BGCOLOR
     if( $bg !== FALSE ) {
-      $bgcolor = '&BGCOLOR='.$bg;
+      $bgcolor = '&BGCOLOR='.rawurlencode($bg);
     }
     else {
       $bgcolor = '';
@@ -184,13 +188,13 @@ class WMSQueryString {
     $querystring =
       'VERSION=1.3.0'.
       '&SERVICE=WMS&REQUEST=GetMap'.
-      '&LAYERS='.implode(',',$arr_layers).
-      '&CRS='.$prf->crs.
-      '&STYLES='.implode(',',$arr_styles).
-      '&BBOX='.$uext->join(',').
-      '&WIDTH='.$pw.
-      '&HEIGHT='.$ph.
-      '&FORMAT='.$fmt.
+      '&LAYERS='.rawurlencode(implode(',',$arr_layers)).
+      '&CRS='.rawurlencode($prf->crs).
+      '&STYLES='.rawurlencode(implode(',',$arr_styles)).
+      '&BBOX='.rawurlencode($uext->join(',')).
+      '&WIDTH='.rawurlencode($pw).
+      '&HEIGHT='.rawurlencode($ph).
+      '&FORMAT='.rawurlencode($fmt).
       $bgcolor.
       $transparent.
       '&DPI=96'.
@@ -217,8 +221,8 @@ class XY {
   public $x;
   public $y;
   public function __construct($x, $y) {
-    $this->x = (double)$x;
-    $this->y = (double)$y;
+    $this->x = (float)$x;
+    $this->y = (float)$y;
   }
 
   //
@@ -262,6 +266,16 @@ class Box {
     );
   }
 
+  public static function intersectsInterior($b1, $b2) {
+    // If !($b1->xmin < $b1->xmax), $b1 does not have its interior.
+    return (
+      $b1->xmin < $b1->xmax && $b2->xmin < $b2->xmax
+      && $b1->ymin < $b1->ymax && $b2->ymin < $b2->ymax
+      && $b1->xmin < $b2->xmax && $b1->xmax > $b2->xmin
+      && $b1->ymin < $b2->ymax && $b1->ymax > $b2->ymin
+    );
+  }
+
   public static function intersection($b1, $b2) {
     $xmin = $b1->xmin;
     $ymin = $b1->ymin;
@@ -290,10 +304,10 @@ class Box {
   // xmin, ymin, xmax, ymax
   //autoswap: If true, will swap min and max if needed.
   public function __construct($xmin, $ymin, $xmax, $ymax, $autoswap = FALSE) {
-    $this->xmin = (double)$xmin;
-    $this->ymin = (double)$ymin;
-    $this->xmax = (double)$xmax;
-    $this->ymax = (double)$ymax;
+    $this->xmin = (float)$xmin;
+    $this->ymin = (float)$ymin;
+    $this->xmax = (float)$xmax;
+    $this->ymax = (float)$ymax;
     if( $autoswap && $this->xmin > $this->xmax ) {
       // flip x
       $x = $this->xmin;
@@ -412,6 +426,7 @@ abstract class ProfileBase {
   public $yx; // True if registored order at EPSG is Y-X.
   public $upo; // Unit Point corresponding Pixel (0,0) Point.
   public $upd; // Unit Point corresponding Pixel (w,h) Point.
+  public $ult; // Unit Point of Left Top corner.
   public $uext; // Unit extent of world
   public $pts; // tile width
   public $upp0; // unit-per-pixel on Z=0
@@ -448,9 +463,15 @@ abstract class ProfileBase {
     $this->upd = $upd;
     $this->uext = Box::fromXYArray(array($upo, $upd));
     $this->pts = $pts;
+    $udx = $upd->x - $upo->x;
+    $udy = $upd->y - $upo->y;
     $this->upp0 = new XY(
-      ($upd->x - $upo->x)/($pts->x*$tws0->x),
-      ($upd->y - $upo->y)/($pts->y*$tws0->y)
+      $udx/($pts->x*$tws0->x),
+      $udy/($pts->y*$tws0->y)
+    );
+    $this->ult = new XY(
+      ($udx > 0 ? $upo->x : $upd->x),
+      ($udy > 0 ? $upd->y : $upo->y)
     );
     $this->mpu = $mpu;
     $this->crslong = $crslong;
@@ -459,22 +480,40 @@ abstract class ProfileBase {
 
   // Converts Unit Box to Tile Box
   public function ub2tb($z, $box, $pmx, $pmy) {
-    $uppx = ($this->upp0->x) / (double)(1 << $z);
-    $uppy = ($this->upp0->y) / (double)(1 << $z);
-    return new BOX(
-      (int)floor((($box->xmin - $this->upo->x)/$uppx + $pmx)/ $this->pts->x),
-      (int)floor((($box->ymin - $this->upo->y)/$uppy + $pmy)/ $this->pts->y),
-      (int)ceil((($box->xmax - $this->upo->x)/$uppx + $pmx)/ $this->pts->x - 1),
-      (int)ceil((($box->ymax - $this->upo->y)/$uppy + $pmy)/ $this->pts->y - 1),
-      TRUE
-    );
+    // unit/pixel
+    $uppx = ($this->upp0->x) / (float)(1 << $z);
+    $uppy = ($this->upp0->y) / (float)(1 << $z);
+    // tile extent (float)
+    $tx1 = (($box->xmin - $this->upo->x)/$uppx + $pmx)/ $this->pts->x;
+    $tx2 = (($box->xmax - $this->upo->x)/$uppx + $pmx)/ $this->pts->x;
+    $ty1 = (($box->ymin - $this->upo->y)/$uppy + $pmy)/ $this->pts->y;
+    $ty2 = (($box->ymax - $this->upo->y)/$uppy + $pmy)/ $this->pts->y;
+    //
+    if( $tx1 < $tx2 ) {
+      $txmin = (int)floor($tx1);
+      $txmax = (int)ceil($tx2) - 1;
+    }
+    else {
+      $txmin = (int)floor($tx2);
+      $txmax = (int)ceil($tx1) - 1;
+    }
+    //
+    if( $ty1 < $ty2 ) {
+      $tymin = (int)floor($ty1);
+      $tymax = (int)ceil($ty2) - 1;
+    }
+    else {
+      $tymin = (int)floor($ty2);
+      $tymax = (int)ceil($ty1) - 1;
+    }
+    return new BOX($txmin, $tymin, $txmax, $tymax, TRUE);
   }
 
   // Converts a tile to Unit Box.
   // strict If true, flip x and y if $this->yx is true.
   public function t2ub($z, $x, $y, $pmx, $pmy, $strict = FALSE) {
-    $uppx = ($this->upp0->x) / (double)(1 << $z);
-    $uppy = ($this->upp0->y) / (double)(1 << $z);
+    $uppx = ($this->upp0->x) / (float)(1 << $z);
+    $uppy = ($this->upp0->y) / (float)(1 << $z);
     $ux1 = ($x * $this->pts->x - $pmx) * $uppx + $this->upo->x;
     $uy1 = ($y * $this->pts->y - $pmy) * $uppy + $this->upo->y;
     $ux2 = (($x + 1) * $this->pts->x + $pmx) * $uppx + $this->upo->x;
@@ -502,7 +541,7 @@ abstract class ProfileBase {
   }
 
   public function getUnitLeftTopCorner() {
-    return $this->upo;
+    return $this->ult;
   }
 
   public function getUnitRightBottomCorner() {
@@ -511,6 +550,24 @@ abstract class ProfileBase {
 
   public function getCrs() {
     return $this->crs;
+  }
+
+  public function isWmtsCompatible() {
+    if( $this->upp0 && $this->upp0->x > 0 && $this->upp0->y < 0 ) {
+      return TRUE;
+    }
+    return FALSE;
+  }
+
+  public function isTileJsonCompatible() {
+    return $this instanceof MercProfile || $this instanceof MercRevProfile;
+  }
+
+  public function isTmsCompatible() {
+    if( $this->upp0 && $this->upp0->x > 0 && $this->upp0->y > 0 ) {
+      return TRUE;
+    }
+    return FALSE;
   }
 
   // Gets ub forced within the world
@@ -552,7 +609,7 @@ abstract class ProfileBase {
   // OGC 07-057r7:
   // pixelSpan = scaleDenominator × 0.28 10-3 / metersPerUnit(crs);
   public function getOGCScaleDenominator($z) {
-    $uppx = ($this->upp0->x) / (double)(1 << $z);
+    $uppx = ($this->upp0->x) / (float)(1 << $z);
     return $uppx/0.00028 * $this->mpu;
   }
 }
@@ -568,8 +625,8 @@ class MercProfile extends ProfileBase {
       'merc',
       'EPSG:3857',
       false,
-      new XY(-20037508.0, 20037508.0),
-      new XY(20037508.0, -20037508.0),
+      new XY(-20037508.342789244, 20037508.342789244),
+      new XY(20037508.342789244, -20037508.342789244),
       $pts ? $pts : new XY(256,256),
       new XY(1, 1),
       1.0,
@@ -580,14 +637,14 @@ class MercProfile extends ProfileBase {
 
   public function prj($p) {
     return new XY(
-      self::R * (double)$p->x*M_PI/180.0,
-      self::R * log(tan(0.25*M_PI + 0.5*(double)$p->y*M_PI/180.0))
+      self::R * (float)$p->x*M_PI/180.0,
+      self::R * log(tan(0.25*M_PI + 0.5*(float)$p->y*M_PI/180.0))
     );
   }
 
   public function inv($p) {
     return new XY (
-      (double)$p->x / self::R / M_PI * 180.0,
+      (float)$p->x / self::R / M_PI * 180.0,
       asin(tanh($p->y/self::R)) / M_PI * 180.0
     );
   }
@@ -599,11 +656,11 @@ class MercRevProfile extends ProfileBase {
 
   public function __construct($pts = FALSE ) {
     parent::__construct(
-      'merc',
+      'mercrev',
       'EPSG:3857',
       false,
-      new XY(-20037508.0, -20037508.0),
-      new XY(20037508.0, 20037508.0),
+      new XY(-20037508.342789244, -20037508.342789244),
+      new XY(20037508.342789244, 20037508.342789244),
       $pts ? $pts : new XY(256,256),
       new XY(1, 1),
       1.0,
@@ -614,14 +671,14 @@ class MercRevProfile extends ProfileBase {
 
   public function prj($p) {
     return new XY(
-      self::R * (double)$p->x*M_PI/180.0,
-      self::R * log(tan(0.25*M_PI + 0.5*(double)$p->y*M_PI/180.0))
+      self::R * (float)$p->x*M_PI/180.0,
+      self::R * log(tan(0.25*M_PI + 0.5*(float)$p->y*M_PI/180.0))
     );
   }
 
   public function inv($p) {
     return new XY (
-      (double)$p->x / self::R / M_PI * 180.0,
+      (float)$p->x / self::R / M_PI * 180.0,
       asin(tanh($p->y/self::R)) / M_PI * 180.0
     );
   }
@@ -660,7 +717,7 @@ class GeodProfile extends ProfileBase {
 class GeodRevProfile extends ProfileBase {
   public function __construct($pts = FALSE) {
     parent::__construct(
-      'geod',
+      'geodrev',
       'EPSG:4326',
       true,
       new XY(-180.0, -90.0),
@@ -686,10 +743,20 @@ class GeodRevProfile extends ProfileBase {
 class RasterCropper {
   public function crop($rowdata, $pmx, $pmy, $pw, $ph, $itc, $bg) {
     $img = imagecreatefromstring($rowdata);
+    if( $img === FALSE ) {
+      return FALSE;
+    }
     $imgc = imagecrop($img, array('x'=>$pmx, 'y'=>$pmy, 'width'=>$pw, 'height'=>$ph));
     imagedestroy($img);
-    $tmppath = tempnam( sys_get_temp_dir(), '_TILE_CROP_');
+    if( $imgc === FALSE ) {
+      return FALSE;
+    }
+    $tmppath = tempnam( sys_get_temp_dir(), '_TILE_CROP_'); // A file created here.
     $r = FALSE;
+    if( $tmppath === FALSE ) {
+      imagedestroy($imgc);
+      return FALSE;
+    }
     switch( $itc ) {
     case ITCode::IT_GIF:
       $r = imagegif($imgc, $tmppath);
@@ -708,9 +775,11 @@ class RasterCropper {
     // Reads data
     $data = FALSE;
     if( $r !== FALSE ) {
-      $fp = fopen($tmppath, 'r');
-      $data = stream_get_contents($fp);
-      fclose($fp);
+      $fp = fopen($tmppath, 'rb');
+      if( $fp !== FALSE ) {
+        $data = stream_get_contents($fp);
+        fclose($fp);
+      }
     }
     unlink($tmppath);
     return $data;
@@ -829,13 +898,22 @@ class MBSource extends SourceBase {
     if( $setting->revy === TRUE ) {
       $y = (1 << $z) - 1 - $y;
     }
+    // pdo options
+    $pdo_opts = [];
+    if( defined('Pdo\Sqlite::ATTR_OPEN_FLAGS') ) {
+      // PHP 8.4+
+      $pdo_opts[\Pdo\Sqlite::ATTR_OPEN_FLAGS] = \Pdo\Sqlite::OPEN_READONLY;
+    }
+    else {
+      // Older PHP
+      $pdo_opts[PDO::SQLITE_ATTR_OPEN_FLAGS] = PDO::SQLITE_OPEN_READONLY;
+    }
+    // constructs pdo.
     $dbh = new PDO(
         'sqlite:'.$setting->path,
         null,
         null,
-        [
-            PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY
-        ]
+        $pdo_opts
     );
     $sth = $dbh->prepare('SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?');
     $sth->execute([$z, $x, $y]);
@@ -871,43 +949,51 @@ class WMSSource extends SourceBase {
     }
   }
 
-  public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
-    $qs = WMSQueryString::generate($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts['layers'], $bg);
-    $url = $this->baseurl.$this->delim.$qs;
+  private function getUrlContents($url, $itc) {
     $data = @file_get_contents($url);
     if( $data === FALSE ) {
       // log error
       $err = error_get_last();
-      error_log($err['message']);
-    }
-    else {
-      // if http/https, $http_response_header is set.
-      if( isset($http_response_header) ) {
-        if( is_array($http_response_header) ) {
-          foreach( $http_response_header as $line ) {
-            if( preg_match('/^HTTP\\/[0-9\\.]+\\s+[0-9]+\\s+.*$/', $line) ) {
-              $status = (int)preg_replace('/^HTTP\\/[0-9\\.]+\\s+([0-9]+)\\s+.*$/', '${1}', $line);
-              if( $status != 200 ) {
-                // error occurred
-                error_log($url.' gets '.$status);
-                $data = FALSE;
-                break;
-              }
-            }
-            if( preg_match('/^Content-Type\\s*:/', $line) ) {
-              $ct = preg_replace('/^Content-Type\\s*:\\s*([^\\s].*)$/', '${1}', $line);
-              $itc1 = ITCode::ct2itc($ct);
-              if( $itc1 != $itc ) {
-                error_log('Expects "'.ITCode::CONTENT_TYPES[$itc].'", but got contet type is "'.$ct.'".');
-                $data = FALSE;
-                break;
-              }
-            }
-          }
-        }
+      if( $err === null ) {
+        error_log("No error, but got FALSE");
+      }
+      else {
+        error_log($err['message']);
       }
     }
+    //
+    if( function_exists('http_get_last_response_headers') ) {
+      $headers = http_get_last_response_headers();
+    }
+    else {
+      $headers = $http_response_header ?? [];
+    }
+    $status = NULL;
+    $ct = NULL;
+    foreach( $headers as $line ) {
+      if( preg_match('/^HTTP\/[0-9.]+\s+([0-9]+)/i', $line, $m) ) {
+        $status = (int)$m[1];
+        $ct = NULL; // New response
+      }
+      else if( preg_match('/^Content-Type\s*:\s*([^\s;]+).*$/i', $line, $m) ) {
+        $ct = trim($m[1]);
+      }
+    }
+    if( $status !== 200 ) {
+      error_log("{$url} returns {$status}");
+      $data = FALSE;
+    }
+    if( $ct !== NULL && !ITCode::ctIsItc($ct, $itc) ) {
+      error_log("{$url} returns {$ct}");
+      $data = FALSE;
+    }
     return $data;
+  }
+
+  public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
+    $qs = WMSQueryString::generate($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts['layers'], $bg);
+    $url = $this->baseurl.$this->delim.$qs;
+    return $this->getUrlContents($url, $itc);
   }
 
 }
@@ -932,12 +1018,17 @@ class MSWMSSource extends SourceBase {
 
   public function getRaw($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts, $bg = FALSE) {
     $qs = WMSQueryString::generate($z, $x, $y, $itc, $pmx, $pmy, $prf, $opts['layers'], $bg);
-    $querystring = 'map='.$this->mapfilepath.'&'.$qs;
+    $querystring = 'map='.rawurlencode($this->mapfilepath).'&'.$qs;
     //
     // echo "'".$this->mspath."' 'QUERY_STRING=${querystring}'";
     // exit;
     //
-    $fr = popen("'".$this->mspath."' 'QUERY_STRING=${querystring}'", 'r');
+    $arg0 = escapeshellarg($this->mspath);
+    $arg1 = escapeshellarg("QUERY_STRING={$querystring}");
+    $fr = popen($arg0.' '.$arg1, 'r');
+    if( $fr === FALSE ) {
+        return FALSE;
+    }
     $data = FALSE;
     $fmt = ITCode::WMS_FORMATS[$itc];
     $line1 = fgets($fr);
@@ -964,6 +1055,7 @@ abstract class StoreBase{
   abstract public function put($layername, $z, $x, $y, $itc, $data);
 }
 
+// FileStoreBase cannot prevent cache file corruption if the process terminates unexpectedly.
 abstract class FileStoreBase {
   private $basedir;
   abstract public function dirpath($layername,$z,$x,$y,$itc);
@@ -975,6 +1067,7 @@ abstract class FileStoreBase {
       $this->dirpath($layername,$z,$x,$y,$itc).DIRECTORY_SEPARATOR.
       $this->filename($layername,$z,$x,$y,$itc);
     if( file_exists($filepath) ) {
+      // This may get an unfinished file. 
       return file_get_contents($filepath);
     }
     return FALSE;
@@ -990,7 +1083,8 @@ abstract class FileStoreBase {
         return FALSE;
       }
     }
-    $r = file_put_contents($filepath, $data);
+    
+    $r = file_put_contents($filepath, $data, LOCK_EX);
     return $r !== FALSE;
   }
 
@@ -1000,6 +1094,7 @@ abstract class FileStoreBase {
 
 }
 
+// TMSStore (FileStoreBase) cannot prevent cache file corruption if the process terminates unexpectedly.
 class TMSStore extends FileStoreBase {
   public function dirpath($layername,$z,$x,$y,$itc) {
     return
@@ -1013,6 +1108,7 @@ class TMSStore extends FileStoreBase {
   }
 }
 
+// DigitStore (FileStoreBase) cannot prevent cache file corruption if the process terminates unexpectedly.
 class DigitStore extends FileStoreBase {
   private $digits;
   private $fmt;
@@ -1048,7 +1144,7 @@ CREATE TABLE tile (
   x INT,
   y INT,
   itc INT,
-  data bytea,
+  data oid,
   UNIQUE(layer, z, x, y, itc)
 );
 
@@ -1144,9 +1240,9 @@ class PGStore extends StoreBase {
 
   private function getConn() {
     if( $this->conn == NULL ) {
-      $conn = pg_connect($this->connstr);
+      $this->conn = pg_connect($this->connstr);
     }
-    return $conn;
+    return $this->conn;
   }
 
   private function clearConn() {
@@ -1158,19 +1254,31 @@ class PGStore extends StoreBase {
 
   public function get($layername, $z, $x, $y, $itc) {
     $conn = $this->getConn();
-    pg_query($conn, 'begin');
+    if( $conn === FALSE ) {
+      return FALSE;
+    }
+    $res_begin = pg_query($conn, 'begin');
+    if( $res_begin === FALSE ) {
+      // Fail executing "begin" !
+      return FALSE;
+    }
     $ret = FALSE;
     $res = pg_query_params(
+      $conn,
       'SELECT data FROM '.$this->table.' '.
         'WHERE layer=$1 AND z=$2 AND x=$3 AND y=$4 AND itc=$5',
       array($layername,$z,$x,$y,$itc)
     );
-    if( pg_numrows($res) > 0 ) {
+    if( $res !== FALSE && pg_numrows($res) > 0 ) {
       $oid = pg_fetch_result($res, 0, 0);
       if( $oid !== FALSE ) {
-        $tmppath = tempnam( sys_get_temp_dir(), '_TILE_PG_READ_');
-        if( pg_lo_export($conn, $oid, $tmppath) !== FALSE ) {
-          $ret = file_get_contents($tmppath);
+        $tmppath = tempnam( sys_get_temp_dir(), '_TILE_PG_READ_'); // A file created here.
+        if( $tmppath !== FALSE ) {
+          if( pg_lo_export($conn, $oid, $tmppath) !== FALSE ) {
+            $ret = file_get_contents($tmppath);
+          }
+          // deletes tmpfile
+          unlink($tmppath);
         }
       }
     }
@@ -1179,23 +1287,36 @@ class PGStore extends StoreBase {
   }
 
   public function put($layername, $z, $x, $y, $itc, $data) {
-    $conn = $this->getConn();
-    $tmppath = tempnam( sys_get_temp_dir(), '_TILE_PG_WRITE_');
-    file_put_contents($tmppath, $data);
-    pg_query($conn, 'begin');
     $ret = FALSE;
-    $oid = pg_lo_import($conn, $tmppath);
-    if( $oid !== FALSE ) {
-      $resinsert = pg_query_params(
-        $conn,
-        'INSERT INTO '.$this->table.' (layer,z,x,y,itc,data) '.
-          'SELECT $1,$2,$3,$4,$5,$6',
-        array($layername,$z,$x,$y,$itc,$oid)
-      );
-      $ret = $resinsert !== FALSE;
+    $conn = $this->getConn();
+    if( $conn === FALSE ) {
+      return FALSE;
     }
-    pg_query($conn, 'end');
-    pg_close($conn);
+    $tmppath = tempnam( sys_get_temp_dir(), '_TILE_PG_WRITE_');
+    if( $tmppath === FALSE ) {
+      return FALSE;
+    }
+    $putbytes = file_put_contents($tmppath, $data);
+    if( $putbytes > 0 && $putbytes == strlen($data) ) {
+      $res_begin = pg_query($conn, 'begin');
+      if( $res_begin !== FALSE ) {
+        $oid = pg_lo_import($conn, $tmppath);
+        if( $oid !== FALSE ) {
+          $resinsert = pg_query_params(
+            $conn,
+            'INSERT INTO '.$this->table.' (layer,z,x,y,itc,data) '.
+              'SELECT $1,$2,$3,$4,$5,$6',
+            array($layername,$z,$x,$y,$itc,$oid)
+          );
+          $ret = $resinsert !== FALSE;
+        }
+        // if end failed, returns FALSE.
+        $res_end = pg_query($conn, 'end');
+        if( $res_end === FALSE ) {
+          $ret = FALSE;
+        }
+      }
+    }
     unlink($tmppath);
     return $ret;
   }
@@ -1212,6 +1333,8 @@ class PGStore extends StoreBase {
 
 // ----------------------------------------------------------------
 class Url {
+  public static $USE_HTTP_X_FORWARDED_SERVER = FALSE; // Change this before calling the constructor.
+
   private $https; // true/false
   private $host;  // foo.bar.example
   private $port;  // 80, 443
@@ -1241,18 +1364,17 @@ class Url {
 
   public function analyze($server) {
     // https
-    if( isset($server['HTTPS']) ) {
-      $this->https = TRUE;
+    $is_https = FALSE;
+    if( isset($server['HTTPS']) && strcasecmp($server['HTTPS'], 'on') === 0 ) {
+       $is_https = TRUE;
     }
-    else {
-      $this->https = FALSE;
-    }
+    $this->https = $is_https;
     // host
     $this->host = $this->getHost($server);
     // port
     $this->port = $this->https ? 443 : 80;
-    if( isset($_SERVER['SERVER_PORT']) ) {
-      $port = $_SERVER['SERVER_PORT'];
+    if( isset($server['SERVER_PORT']) ) {
+      $port = $server['SERVER_PORT'];
       if( preg_match('/^[0-9]+$/',$port) ) {
         $this->port = $port * 1;
       }
@@ -1332,9 +1454,9 @@ class Url {
   public function buildThisUrl($forcedir) {
     $ret = $this->buildRootUrl();
     if( $this->segments !== FALSE ) {
-      $ret = $ret .implode('/', $this->segments);
+      $ret = $ret.implode('/', $this->segments);
     }
-    return $ret.(($adddir || $this->isdir) ? '/' : '');
+    return $ret.(($forcedir || $this->isdir) ? '/' : '');
   }
 
   //
@@ -1345,7 +1467,7 @@ class Url {
   // override this.
   //
   public function getHost($server) {
-    if( isset($server['HTTP_X_FORWARDED_SERVER']) ) {
+    if( Url::$USE_HTTP_X_FORWARDED_SERVER && isset($server['HTTP_X_FORWARDED_SERVER']) ) {
       return $server['HTTP_X_FORWARDED_SERVER'];
     }
     return $server['SERVER_NAME'];
@@ -1487,7 +1609,7 @@ class TileParams {
     if( $layername === FALSE ) {
       $layername = $this->layername;
     }
-    $ret = $this->buildRootUrl(TRUE).$layername;
+    $ret = $this->buildRootUrl(TRUE).rawurlencode($layername);
     if( $addtail ) {
       $ret = $ret.'/';
     }
@@ -1508,11 +1630,16 @@ class TileParams {
     return $layerurl . 'tilejson.'.ITCode::EXTENSIONS[$itc].'.json';
   }
 
-  public function buildTileUrl($z, $x, $y, $type, $itc, $layername=FALSE) {
-    $ret = $this->buildLayerUrl(TRUE, $layername).$z.'/'.$x.'/'.$y.'.'.ITCode::EXTENSIONS[$itc];
+  public function buildTilePathPart($z, $x, $y, $type, $itc) {
+    $ret = $z.'/'.$x.'/'.$y.'.'.ITCode::EXTENSIONS[$itc];
     if( $type == TileParams::T_KML ) {
       $ret = $ret.'.kml';
     }
+    return $ret;
+  }
+
+  public function buildTileUrl($z, $x, $y, $type, $itc, $layername=FALSE) {
+    $ret = $this->buildLayerUrl(TRUE, $layername).$this->buildTilePathPart($z, $x, $y, $type, $itc);
     return $ret;
   }
 
@@ -1529,10 +1656,10 @@ class TileParams {
       $seg = $segs[$n];
       switch( $n ) {
       case 4:
-        if( preg_match('/^-?[0-9]+\\.[a-zA-z]+$/', $seg) ) {
+        if( preg_match('/^-?[0-9]+\\.[a-zA-Z]+$/', $seg) ) {
           $rone = TileParams::T_IMAGE;
         }
-        else if( preg_match('/^-?[0-9]+\\.[a-zA-z]+\\.kml$/', $seg) ) {
+        else if( preg_match('/^-?[0-9]+\\.[a-zA-Z]+\\.kml$/', $seg) ) {
           $rone = TileParams::T_KML;
         }
         $fin = TRUE;
@@ -1543,7 +1670,7 @@ class TileParams {
         }
         break;
       case 2:
-        if( preg_match('/^-?[0-9]+$/', $seg) ) {
+        if( preg_match('/^[0-9]+$/', $seg) ) {
           $rone = TileParams::T_Z;
         }
         else if( $seg == 'tilemapresource.xml' ) {
@@ -1560,7 +1687,7 @@ class TileParams {
             $fin = TRUE;
           }
           else {
-            $rone = TileParams::T_LAYER;
+            $rone = TileParams::T_NOTFOUND;
           }
         }
         break;
@@ -1630,7 +1757,12 @@ class TileParams {
     case TileParams::T_IMAGE:
     case TileParams::T_X:
     case TileParams::T_Z:
-      $this->z = $segs[2] * 1;
+      $test_z = $segs[2] * 1;
+      if( $test_z < 0 || $test_z >= PHP_INT_SIZE * 8 - 1 ) {
+        $this->type = TileParams::T_NOTFOUND;
+        return;
+      }
+      $this->z = $test_z;
     }
     // {L}/KMLROOT (doc.[imagetype].kml)
     switch( $this->type ) {
@@ -1722,7 +1854,8 @@ class PGChecker {
     $ret = TRUE;
     $conn = pg_connect($this->connstr);
     if( $conn !== FALSE ) {
-      $res = pg_query_params($query, array(bin2hex($ewkb)));
+      $res = pg_query_params($conn, $query, array(bin2hex($ewkb)));
+      // If this query fails, the check is passed.
       if( $res !== FALSE ) {
         $v = pg_fetch_result($res, 0, 0);
         if( $v == 'f' ) {
@@ -1789,12 +1922,24 @@ class Layer {
   }
 
   public function getLonLatExtent() {
-    return $this->llext;
+    // llext
+    $llext = $this->llext;
+    if( !$llext ) {
+      $llext = $this->prof->invbox($this->prof->uext);
+    }
+    //
+    return $llext;
   }
 
   public function getTileExtent($z, $pmx, $pmy) {
     // 2018-07-05 modified: Changes wrong t2llb to correct llb2tb.
-    return $this->prof->llb2tb($z, $this->llext, $pmx, $pmy);
+    // llext
+    $llext = $this->llext;
+    if( !$llext ) {
+      $llext = $this->prof->invbox($this->prof->uext);
+    }
+    //
+    return $this->prof->llb2tb($z, $llext, $pmx, $pmy);
   }
 
   public function getProfile() {
@@ -1814,7 +1959,6 @@ class Layer {
     }
     return new XY($this->pm->x, $this->pm->y);
   }
-
 
   public function __construct($name, $prof, $itcs, $llext, $zext, $pm, $source, $store, $checker, $opts) {
     $this->name = $name;
@@ -1839,22 +1983,33 @@ class Layer {
     $zmin = $this->getVrtZMin();
     $zmax = $this->getZMax();
     $profname = $this->prof->getName();
-    $ret = <<< EOL_LAYER_HEAD
+    //
+    $name_e = htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $profname_e = htmlspecialchars($profname, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    //
+    $ret = <<< EOL_LAYER_HEAD_1
     <Layer>
-      <ows:Title>$name</ows:Title>
+      <ows:Title>$name_e</ows:Title>
       <ows:WGS84BoundingBox>
         <ows:LowerCorner>$xmin $ymin</ows:LowerCorner>
         <ows:UpperCorner>$xmax $ymax</ows:UpperCorner>
       </ows:WGS84BoundingBox>
-      <ows:Identifier>$name</ows:Identifier>
+      <ows:Identifier>$name_e</ows:Identifier>
       <Style isDefault="true">
         <ows:Title>default</ows:Title>
         <ows:Identifier>default</ows:Identifier>
       </Style>
+EOL_LAYER_HEAD_1;
+    // itc FORMAT
+    foreach( $this->getImageTypeCodes() as $itc ) {
+      $ct = ITCode::CONTENT_TYPES[$itc];
+      $ret = $ret."      <Format>$ct</Format>\n";
+    }
+    $ret = $ret . <<< EOL_LAYER_HEAD_2
       <TileMatrixSetLink>
-        <TileMatrixSet>MATRIXSET:$profname</TileMatrixSet>
-
-EOL_LAYER_HEAD;
+        <TileMatrixSet>MATRIXSET:$profname_e</TileMatrixSet>
+        <TileMatrixSetLimits>
+EOL_LAYER_HEAD_2;
     for( $z = $zmin; $z <= $zmax; $z++ ) {
       $tb = $this->prof->llb2tb($z, $llext, 0, 0);
       $txmin = $tb->xmin;
@@ -1862,27 +2017,25 @@ EOL_LAYER_HEAD;
       $txmax = $tb->xmax;
       $tymax = $tb->ymax;
       $ret = $ret. <<< EOL_LAYER_LIMITS
-          <TileMatrixSetLimits>
+          <TileMatrixLimits>
             <TileMatrix>$z</TileMatrix>
-            <MinTileCol>$txmin</MinTileCol>
             <MinTileRow>$tymin</MinTileRow>
-            <MaxTileCol>$txmax</MaxTileCol>
             <MaxTileRow>$tymax</MaxTileRow>
-          </TileMatrixSetLimits>
-
+            <MinTileCol>$txmin</MinTileCol>
+            <MaxTileCol>$txmax</MaxTileCol>
+          </TileMatrixLimits>
 EOL_LAYER_LIMITS;
     }
-    $ret = $ret."      </TileMatrixSetLink>\n";
-    // itc FORMAT
-    foreach( $this->getImageTypeCodes() as $itc ) {
-      $ct = ITCode::CONTENT_TYPES[$itc];
-      $ret = $ret."      <Format>$ct</Format>\n";
-    }
+    $ret = $ret. <<< EOL_CLOSING_TILEMATRIXSETLINK
+        </TileMatrixSetLimits>
+      </TileMatrixSetLink>
+EOL_CLOSING_TILEMATRIXSETLINK;
     // itc URL
     foreach( $this->getImageTypeCodes() as $itc ) {
       $url = $params->buildTileUrl('{TileMatrix}','{TileCol}','{TileRow}',TileParams::T_IMAGE, $itc, $name);
+      $url_e = htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
       $ct = ITCode::CONTENT_TYPES[$itc];
-      $ret = $ret."      <ResourceURL format=\"$ct\" resourceType=\"tile\" template=\"".$url."\" />\n";
+      $ret = $ret."      <ResourceURL format=\"$ct\" resourceType=\"tile\" template=\"".$url_e."\" />\n";
     }
     $ret = $ret."    </Layer>\n";
     return $ret;
@@ -1906,6 +2059,12 @@ EOL_LAYER_LIMITS;
   }
 
   public function getImage($z, $x, $y, $itc) {
+    // llext
+    $llext = $this->llext;
+    if( !$llext ) {
+      $llext = $this->prof->invbox($this->prof->uext);
+    }
+    //
     $pmx = 0;
     $pmy = 0;
     if( $this->pm ) {
@@ -1917,22 +2076,23 @@ EOL_LAYER_LIMITS;
     // 1: OB, returns specified image.
     // 2: Not Found, must not return any image.
     $ob = 0;
-    if($this->llext
-      && !Box::intersects(
-        $this->prof->prjbox($this->llext),
-        $this->prof->t2ub($z, $x, $y, 0, 0)
-      )
-    ) {
-      $ob = 1;
-    }
-    else if($this->zext && !$this->zext->covers($z) ) {
-      // without zext
+    // Z
+    if($this->zext && !$this->zext->covers($z) ) {
+      // outof extent z
       if( $this->coversVrtZ($z) ) {
         $ob = 1;
       }
       else {
-        $ob = 2; // Not Found
+        $ob = 2;
       }
+    }
+    // X-Y
+    else if(!Box::intersectsInterior(
+        $this->prof->prjbox($llext),
+        $this->prof->t2ub($z, $x, $y, 0, 0)
+      )
+    ) {
+      $ob = 1;
     }
     // Returns if OB.
     if( $ob != 0 ) {
@@ -1952,6 +2112,7 @@ EOL_LAYER_LIMITS;
     // Checks with checker.
     if( $this->checker && !$this->checker->check($this->prof, $z, $x, $y, $pmx, $pmy) ) {
       // checker error
+      $data = FALSE;
       if( $this->opts ) {
         if( isset($this->opts['blank']) ) {
           if( isset($this->opts['blank'][$itc]) ) {
@@ -1994,23 +2155,25 @@ EOL_LAYER_LIMITS;
         $north = $llb->ymax;
         $kml_name = $params->buildTileUrl($z, $x, $y, TileParams::T_IMAGE, $itc);
         $kml_href = $params->buildTileUrl($z, $x, $y, TileParams::T_KML, $itc);
+        $kml_name_e = htmlspecialchars($kml_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $kml_href_e = htmlspecialchars($kml_href, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $networklink =<<< EOL_LINK
 <NetworkLink>
-  <name>$kml_name</name>
+  <name>$kml_name_e</name>
   <Region>
+    <LatLonAltBox>
+      <north>$north</north>
+      <south>$south</south>
+      <east>$east</east>
+      <west>$west</west>
+    </LatLonAltBox>
     <Lod>
       <minLodPixels>128</minLodPixels>
       <maxLodPixels>-1</maxLodPixels>
     </Lod>
-    <LatLonAltBox>
-      <north>$north</north>
-      <south>$south</south>
-      <west>$west</west>
-      <east>$east</east>
-    </LatLonAltBox>
   </Region>
   <Link>
-    <href>$kml_href</href>
+    <href>$kml_href_e</href>
     <viewRefreshMode>onRegion</viewRefreshMode>
     <viewFormat></viewFormat>
   </Link>
@@ -2027,62 +2190,72 @@ EOL_LINK;
   function getKmlRoot($params, $name, $itc) {
     // lookat (optional)
     $lookat = '';
-    if( $this->llext ) {
-      $c = $this->llext->centroid();
-      $clon = $c->x;
-      $clat = $c->y;
-      $alti = 0.0;
-      // range
-      $R = 6378137.0;
-      $lonmin = $this->llext->xmin;
-      $lonmax = $this->llext->xmax;
-      $latmin = $this->llext->ymin;
-      $latmax = $this->llext->ymax;
-      $dlon = $lonmax - $lonmin;
-      $dlat = $latmax - $latmin;
-      $dlam = $dlon*M_PI/180.0;
-      $dphi = $dlat*M_PI/180.0;
-      // $alat = abs(lat)
-      $alatmax = abs($latmax);
-      $alatmin = abs($latmin);
+    // llext
+    $llext = $this->llext;
+    if( !$llext ) {
+      $llext = $this->prof->invbox($this->prof->uext);
+    }
+    //
+    $c = $llext->centroid();
+    $clon = $c->x;
+    $clat = $c->y;
+    $alti = 0.0;
+    // estimates initial range (= camera altitude)
+    $R = 6378137.0;
+    $lonmin = $llext->xmin;
+    $lonmax = $llext->xmax;
+    $latmin = $llext->ymin;
+    $latmax = $llext->ymax;
+    $dlon = $lonmax - $lonmin;
+    $dlat = $latmax - $latmin;
+    $dlam = $dlon*M_PI/180.0;
+    $dphi = $dlat*M_PI/180.0;
+    // alat: latitude where east-west radius is largest.
+    $alatmax = abs($latmax);
+    $alatmin = abs($latmin);
+    if( $latmin <= 0 && $latmax >= 0 ) {
+      $alat = 0;
+    }
+    else {
       $alat = $alatmax > $alatmin ? $alatmin : $alatmax;
-      // Focal Length (mm)
-      $F = 30.0;
-      // range for y
-      $tan_ty = 18.0 / $F;
-      $range_lat = $R * (1-cos(0.5*$dlam)+sin(0.5*$dlam)/$tan_ty);
-      // range for x
-      $tan_tx = 12.0 / $F;
-      $range_lon = $R * cos($alat*M_PI/180.0) * (1-cos(0.5*$dlam)+sin(0.5*$dlam)/$tan_tx);
-      // range
-      $range = $range_lat > $range_lon ? $range_lat : $range_lon;
-      // LookAt element
-      $lookat = <<< EOL_LOOKAT
+    }
+    // Focal Length (mm)
+    $F = 30.0;
+    // Range for Y (north–south), assuming that the sensor half-height is 18 mm.
+    $tan_ty = 18.0 / $F;
+    $range_lat = $R * (sin(0.5*$dphi)/$tan_ty-(1-cos(0.5*$dphi)));
+    // Range for X (east - west), assuming that the sensor half-width is 12 mm.
+    $tan_tx = 12.0 / $F;
+    $range_lon = $R * cos($alat*M_PI/180.0) * (sin(0.5*$dlam)/$tan_tx-(1-cos(0.5*$dlam)));
+    // range
+    $range = $range_lat > $range_lon ? $range_lat : $range_lon;
+    // LookAt element
+    $lookat = <<< EOL_LOOKAT
 <LookAt>
-  <latitude>$clat</latitude>
   <longitude>$clon</longitude>
+  <latitude>$clat</latitude>
   <altitude>0</altitude>
   <range>$range</range>
 </LookAt>
 
 EOL_LOOKAT;
-    }
     // networklink
-    $tb = $this->prof->ub2tb($this->zext->zmin, $this->llext, 0, 0);
+    $tb = $this->prof->llb2tb($this->zext->zmin, $llext, 0, 0);
     $networklink = $this->getKmlNetworkLink($params, $this->zext->zmin, $itc, $tb);
+    $name_e = htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     // Build
     return <<< EOL_KML
 <?xml version="1.0" ?>
-<kml xmlns="http://earth.google.com/kml/2.1">
+<kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
-<Name>$name</Name>
-<Description></Description>
+<name>$name_e</name>
+<description></description>
+$lookat
 <Style>
   <ListStyle id="hideChildren">
     <listItemType>checkHideChildren</listItemType>
   </ListStyle>
 </Style>
-$lookat
 $networklink
 </Document>
 </kml>
@@ -2091,12 +2264,17 @@ EOL_KML;
   }
 
   function getKml($params, $name, $z, $x, $y, $itc) {
+    // llext
+    $llext = $this->llext;
+    if( !$llext ) {
+      $llext = $this->prof->invbox($this->prof->uext);
+    }
+    //
     $st = self::ST_OK;
     if(
       (
-        $this->llext
-        && !Box::intersects(
-          $this->prof->prjbox($this->llext),
+        !Box::intersectsInterior(
+          $this->prof->prjbox($llext),
           $this->prof->t2ub($z, $x, $y, 0, 0)
         )
       )
@@ -2110,7 +2288,7 @@ EOL_KML;
     ) {
       // out of bounds
       $st = self::ST_OB;
-      if( !$this->opts ) {
+      if( $this->opts ) {
         if( isset($this->opts['ob']) ) {
           if( isset($this->opts['ob'][$itc]) ) {
             // has substitute
@@ -2128,12 +2306,13 @@ EOL_KML;
       // Tile box on z-1
       $tbz1 = Box::intersection(
         new Box(2*$x, 2*$y, 2*$x+1, 2*$y+1),
-        $this->prof->llb2tb($z+1, $this->llext, 0, 0)
+        $this->prof->llb2tb($z+1, $llext, 0, 0)
       );
       $networklink = $this->getKmlNetworkLink($params, $z+1, $itc, $tbz1);
     }
     // -- Ground overrlay
     $img_href = $params->buildTileUrl($z, $x, $y, TileParams::T_IMAGE, $itc);
+    $img_href_e = htmlspecialchars($img_href, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $llb = $this->prof->t2llb($z, $x, $y, 0, 0);
     $west = $llb->xmin;
     $south = $llb->ymin;
@@ -2142,45 +2321,42 @@ EOL_KML;
     $groundoverlay =<<< EOL_GO
 <GroundOverlay>
   <Icon>
-    <href>$img_href</href>
+    <href>$img_href_e</href>
   </Icon>
-  <Lod>
-    <minLodPixels>128</minLodPixels>
-    <maxLodPixels>-1</maxLodPixels>
-  </Lod>
   <LatLonBox>
     <north>$north</north>
     <south>$south</south>
-    <west>$west</west>
     <east>$east</east>
+    <west>$west</west>
   </LatLonBox>
 </GroundOverlay>
 
 EOL_GO;
     // ret
-    return <<< EOL_KML
+    $name = $params->buildTilePathPart($z, $x, $y, TileParams::T_KML, $itc);
+    $name_e = htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $ret =<<< EOL_KML
 <?xml version="1.0" ?>
-<kml xmlns="http://earth.google.com/kml/2.1">
+<kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
-<Name>0/1/0.png.kml</Name>
-<Description></Description>
+<name>$name_e</name>
+<description></description>
 <Style>
   <ListStyle id="hideChildren">
     <listItemType>checkHideChildren</listItemType>
   </ListStyle>
 </Style>
 <Region>
-<Lod>
-  <minLodPixels>128</minLodPixels>
-  <maxLodPixels>-1</maxLodPixels>
-</Lod>
-<LatLonAltBox>
-  <north>$north</north>
-  <south>$south</south>
-  <east>$east</east>
-  <west>$west</west>
-  
-</LatLonAltBox>
+  <LatLonAltBox>
+    <north>$north</north>
+    <south>$south</south>
+    <east>$east</east>
+    <west>$west</west>
+  </LatLonAltBox>
+  <Lod>
+    <minLodPixels>128</minLodPixels>
+    <maxLodPixels>-1</maxLodPixels>
+  </Lod>
 </Region>
 $groundoverlay
 $networklink
@@ -2188,10 +2364,10 @@ $networklink
 </kml>
 
 EOL_KML;
+    return [$st, $ret];
   }
 
 }
-
 
 // ----------------------------------------------------------------
 //
@@ -2207,6 +2383,9 @@ class TileCache {
   public static function showContent($params, $content) {
     Header('Content-Type: '.($params->getContentType()));
     Header('Access-Control-Allow-Origin: *');
+    if(  $params->getType() == TileParams::T_IMAGE && $params->getImageTypeCode() == ITCode::IT_SVGZ ) {
+      Header('Content-Encoding: gzip');
+    }
     echo $content;
   }
 
@@ -2218,18 +2397,20 @@ class TileCache {
     Header('Location: '.($params->buildThisUrl(TRUE)));
   }
 
+  // $body must be HTML source.
   public static function showHtml($title, $head, $body) {
     Header('Content-Type: '.ITCode::CONTENT_TYPES[ITCode::IT_HTML]);
+    $title_e = htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     echo <<< EOL_HTML
 <!DOCTYPE html>
 <html>
 <head>
-  <meta cahrset="UTF-8">
-  <title>$title</title>
+  <meta charset="UTF-8">
+  <title>$title_e</title>
   $head
 </head>
 <body>
-<h1>$title</h1>
+<h1>$title_e</h1>
 $body
 </body>
 </html>
@@ -2269,14 +2450,16 @@ EOL_HTML;
     );
   }
 
+  // $arrmess must be HTML source.
   public static function showError($code, $title, $arrmess) {
     http_response_code($code);
+    $title_e = htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     echo <<< EOL_ERROR_HEAD
 <!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
 <html><head>
-<title>$code $title</title>
+<title>$code $title_e</title>
 </head><body>
-<h1>$title</h1>
+<h1>$title_e</h1>
 
 EOL_ERROR_HEAD;
     foreach($arrmess as $mess) {
@@ -2316,33 +2499,50 @@ EOL_ERROR_HEAD;
   // Process at root URL. Simply shows a table.
   //
   function processRoot($params) {
-    $body = "<table><tbody>\n<tr><th>Name</th><th>Extension</th><th>z</th><th>KML</th><th>TileJSON</th><th>Pattern</th></tr>\n";
+    $body = "<table><tbody>\n<tr><th>Name</th><th>Extension</th><th>z</th><th>WMTS</th><th>KML</th><th>TileJSON</th><th>Pattern</th></tr>\n";
     foreach( $this->layers as $layername => $layer ) {
+      $layername_e = htmlspecialchars($layername, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+      $prof = $layer->getProfile();
+      $wmts = $prof && $prof->isWmtsCompatible() ? 'WMTS': '';
+      //
       $itcs =  $layer->getImageTypeCodes();
       $itcslen = count($itcs);
       if( count($itcs) > 0 ) {
-        $body = $body . "<tr><th rowspan=\"$itcslen\">$layername</th>";
+        $body = $body . "<tr><th rowspan=\"$itcslen\">$layername_e</th>";
         for( $n = 0; $n < $itcslen; $n++ ) {
           $itc = $itcs[$n];
           if( $n > 0 ) {
             $body = $body . '<tr>';
           }
+          $z = ($layer->getZMin().'-'.$layer->getZMax());
           $ext = ITCode::EXTENSIONS[$itc];
           $pattern = $params->buildTileUrl('{z}','{x}','{y}', TileParams::T_IMAGE, $itc, $layername);
           $kmlroot = $params->buildKmlRootUrl($itc, $layername);
-          $tilejson = $params->buildTileJsonUrl($itc, $layername);
-          $z = ($layer->getZMin().'-'.$layer->getZMax());
+          // uses html special chars
+          $pattern_e = htmlspecialchars($pattern, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+          $kmlroot_e = htmlspecialchars($kmlroot, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+          // tilejson
+          if( $prof && $prof->isTileJsonCompatible() ) {
+            $tilejson = $params->buildTileJsonUrl($itc, $layername);
+            $tilejson_e = htmlspecialchars($tilejson, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $tilejson_html = "<a href=\"$tilejson_e\">TileJSON</a>";
+          }
+          else {
+            $tilejson_html = "";
+          }
           $body = $body
-            . "<th>$ext</th><td>$z</td><td><a href=\"$kmlroot\">KML</a></td><td><a href=\"$tilejson\">TileJSON</a></td><td>$pattern</td></tr>\n";
+            . "<th>$ext</th><td>$z</td><td>$wmts</td><td><a href=\"$kmlroot_e\">KML</a></td><td>$tilejson_html</td><td>$pattern_e</td></tr>\n";
         }
       }
       else {
-        $body = $body . "<tr><th>$layername</th><td></td><td></td></tr>\n";
+        $body = $body . "<tr><th>$layername_e</th><td></td><td></td></tr>\n";
       }
     }
+    $url_wmts = $params->buildWmtsUrl();
+    $url_wmts = htmlspecialchars($url_wmts, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $body = $body . "</tbody></table>\n";
     // WMTSCapabilities.xml
-    $body = $body . '<p><a href="'.($params->buildWmtsUrl()).'">WMTSCapabilities.xml</p>';
+    $body = $body . '<p><a href="'.$url_wmts.'">WMTSCapabilities.xml</a></p>';
     TileCache::showHtml($this->name, '', $body);
   }
 
@@ -2362,9 +2562,23 @@ EOL_ERROR_HEAD;
   }
 
   function processKml($layer, $params) {
-    $itc = $params->getImageTypeCode();
-    $data = $layer->getKml($params, $layer->getName(), $params->getZ(), $params->getX(), $params->getY(), $params->getImageTypeCode());
-    TileCache::showContent($params, $data);
+    $data = $layer->getKml(
+      $params, $layer->getName(),
+      $params->getZ(),
+      $params->getX(), $params->getY(),
+      $params->getImageTypeCode()
+    );
+    switch( $data[0] ) {
+    case Layer::ST_OK:
+      TileCache::showContent($params, $data[1]);
+      break;
+    case Layer::ST_OB:
+      TileCache::showNotFound($params);
+      break;
+    default:
+      TileCache::showInternalServerError($params);
+      break;
+    }
   }
 
   function processKmlRoot($layer, $params) {
@@ -2375,10 +2589,18 @@ EOL_ERROR_HEAD;
 
   function processTileJSON($layer, $params) {
     $name = $layer->getName();
-    $scheme = 'xyz';
-    $minzoom = $layer->getZMin();
+    $prof = $layer->getProfile();
+    if( !$prof->isTileJsonCompatible() ) {
+      // not compatbile error
+      TileCache::showNotFound($params);
+      return;
+    }
+    // Scheme := tms if left-to-right and bottom-to-top.
+    $scheme = $prof && $prof->isTmsCompatible() ? 'tms' : 'xyz';
+    $minzoom = $layer->getVrtZMin();
     $maxzoom = $layer->getZMax();
     $bounds = $layer->getLonLatExtent()->toArray();
+    // JSON is not needed to use htmlspecialchars() 
     $tiles = array($params->buildTileUrl('{z}','{x}','{y}',$params->getType(),$params->getImageTypeCode()));
     $arr = array(
       "tilejson" => "2.1.0",
@@ -2399,6 +2621,10 @@ EOL_ERROR_HEAD;
     $name = $this->name;
     $url_root = $params->buildRootUrl(TRUE);
     $url_wmts = $url_root.'WMTSCapabilities.xml';
+    //
+    $name = htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $url_root = htmlspecialchars($url_root, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $url_wmts = htmlspecialchars($url_wmts, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     // head
     $data = <<< EOL_XML_HEAD
 <?xml version="1.0" encoding="UTF-8" ?>
@@ -2440,30 +2666,30 @@ EOL_ERROR_HEAD;
 
 EOL_XML_HEAD;
     // each layer
-    foreach( $this->layers as $name => $layer ) {
-      $data = $data . $layer->getWMTSLayer($params);
-    }
-    // TileMatrixSet
-    // Collects matrixsets
+    // Creates Layer and gets data of TileMatrixSet
     $mss = array();
     foreach( $this->layers as $name => $layer ) {
       $prof = $layer->getProfile();
-      $profname = $prof->getName();
-      $zmin = $layer->getVrtZMin(); // Uses getVrtZMin, not getZMin
-      $zmax = $layer->getZMax();
-      if( !isset($mss[$profname]) ) {
-        $mss[$profname] = array($prof, $zmin, $zmax);
-      }
-      else {
-        if( $zmin < $mss[$profname][1] ) {
-          $mss[$profname][1] = $zmin;
+      if( $prof && $prof->isWmtsCompatible() ) {
+        $data = $data . $layer->getWMTSLayer($params);
+        // gets TileMatrixSet
+        $profname = $prof->getName();
+        $zmin = $layer->getVrtZMin(); // Uses getVrtZMin, not getZMin
+        $zmax = $layer->getZMax();
+        if( !isset($mss[$profname]) ) {
+          $mss[$profname] = array($prof, $zmin, $zmax);
         }
-        if( $zmax > $mss[$profname][2] ) {
-          $mss[$profname][2] = $zmax;
+        else {
+          if( $zmin < $mss[$profname][1] ) {
+            $mss[$profname][1] = $zmin;
+          }
+          if( $zmax > $mss[$profname][2] ) {
+            $mss[$profname][2] = $zmax;
+          }
         }
       }
     }
-    // gets tilematrixset
+    // TileMatrixSet
     foreach( $mss as $profname => $profset ) {
       $prof = $profset[0];
       $zmin = $profset[1];
@@ -2474,11 +2700,16 @@ EOL_XML_HEAD;
       $ptsx = $pts->x;
       $ptsy = $pts->y;
       $lefttop = $prof->getUnitLeftTopCorner()->join(' ');
+      // escapes
+      $profname_e = htmlspecialchars($profname, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+      $crslong_e = htmlspecialchars($crslong, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+      $scaleset_e = htmlspecialchars($scaleset, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+      // makes xml
       $data = $data . <<< EOL_TILEMATRIXSET_HEAD
     <TileMatrixSet>
-      <ows:Identifier>MATRIXSET:$profname</ows:Identifier>
-      <ows:SupportedCRS>$crslong</ows:SupportedCRS>
-      <WellKnownScaleSet>$scaleset</WellKnownScaleSet>
+      <ows:Identifier>MATRIXSET:$profname_e</ows:Identifier>
+      <ows:SupportedCRS>$crslong_e</ows:SupportedCRS>
+      <WellKnownScaleSet>$scaleset_e</WellKnownScaleSet>
 
 EOL_TILEMATRIXSET_HEAD;
       // TileMatrix (each Z)
@@ -2490,8 +2721,8 @@ EOL_TILEMATRIXSET_HEAD;
         $data = $data . <<< EOL_TILEMATRIX
       <TileMatrix>
         <ows:Identifier>$z</ows:Identifier>
-        <TopLeftCorner>$lefttop</TopLeftCorner>
         <ScaleDenominator>$scaledenom</ScaleDenominator>
+        <TopLeftCorner>$lefttop</TopLeftCorner>
         <TileWidth>$ptsx</TileWidth>
         <TileHeight>$ptsy</TileHeight>
         <MatrixWidth>$tw</MatrixWidth>
@@ -2637,6 +2868,5 @@ EOL_TILEMATRIX;
     }
   }
 }
-
 
 ?>
